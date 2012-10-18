@@ -12,6 +12,7 @@ import scala.collection.JavaConverters._
 import annotation.implicitNotFound
 
 import java.lang.reflect.InvocationTargetException
+import reflect.ClassTag
 
 
 trait WithDefaultGlobal {
@@ -29,7 +30,6 @@ trait WithDefaultGlobal {
   } catch {
     case e: InstantiationException => None
     case e: ClassNotFoundException => None
-    case e => throw e
   }
 
   lazy private val scalaGlobal: GlobalSettings = try {
@@ -39,7 +39,6 @@ trait WithDefaultGlobal {
     case e if initialConfiguration.getString("application.global").isDefined => {
       throw initialConfiguration.reportError("application.global", "Cannot initialize the custom Global object (%s) (perhaps it's a wrong reference?)".format(e.getMessage))
     }
-    case e => throw e
   }
 
   /**
@@ -52,10 +51,11 @@ trait WithDefaultGlobal {
       javaGlobal.map(new j.JavaGlobalSettingsAdapter(_)).getOrElse(scalaGlobal)
     } catch {
       case e: PlayException => throw e
-      case e => throw PlayException(
+      case e: Exception => throw new PlayException(
         "Cannot init the Global object",
         e.getMessage,
-        Some(e))
+        e
+      )
     }
   }
 
@@ -71,11 +71,10 @@ trait WithDefaultConfiguration {
     Configuration.load(path, mode)
   }
 
-  private lazy val fullConfiguration = {
-    initialConfiguration ++ global.configuration
-  }
+  private lazy val fullConfiguration = global.onLoadConfig(initialConfiguration, path, classloader, mode)
 
   def configuration: Configuration = fullConfiguration
+
 }
 
 trait WithDefaultPlugins {
@@ -92,7 +91,7 @@ trait WithDefaultPlugins {
     val pluginFiles = self.classloader.getResources("play.plugins").asScala.toList ++ self.classloader.getResources("conf/play.plugins").asScala.toList
 
     pluginFiles.distinct.map { plugins =>
-      (plugins.asInput.slurpString.split("\n").map(_.trim)).filterNot(_.isEmpty).map {
+      (plugins.asInput.string.split("\n").map(_.trim)).filterNot(_.isEmpty).map {
         case PluginDeclaration(priority, className) => (priority.toInt, className)
       }
     }.flatten.sortBy(_._1).map(_._2)
@@ -133,21 +132,21 @@ trait WithDefaultPlugins {
             if (plugin.enabled) Some(plugin) else { Logger("play").warn("Plugin [" + className + "] is disabled"); None }
           } catch {
             case e: PlayException => throw e
-            case e => throw PlayException(
+            case e: Exception => throw new PlayException(
               "Cannot load plugin",
               "Plugin [" + className + "] cannot been instantiated.",
-              Some(e))
+              e)
           }
         }
-        case e: InvocationTargetException => throw PlayException(
+        case e: InvocationTargetException => throw new PlayException(
           "Cannot load plugin",
           "An exception occurred during Plugin [" + className + "] initialization",
-          Some(e.getTargetException))
+          e.getTargetException)
         case e: PlayException => throw e
-        case e => throw PlayException(
+        case e: Exception => throw new PlayException(
           "Cannot load plugin",
           "Plugin [" + className + "] cannot been instantiated.",
-          Some(e))
+          e)
       }
     }.flatten
 
@@ -167,17 +166,28 @@ trait WithDefaultPlugins {
  *
  * This will create an application using the current classloader.
  *
- * @param path the absolute path hosting this application, mainly used by the `getFile(path)` helper method
- * @param classloader the application's classloader
- * @param sources the `SourceMapper` used to retrieve source code displayed in error pages
- * @param mode `Dev` or `Prod`, passed as information for the user code
  */
 @implicitNotFound(msg = "You do not have an implicit Application in scope. If you want to bring the current running Application into context, just add import play.api.Play.current")
 trait Application {
 
+  /**
+   * The absolute path hosting this application, mainly used by the `getFile(path)` helper method
+   */
   def path: File
+
+  /**
+   * The application's classloader
+   */
   def classloader: ClassLoader
+
+  /**
+   * The `SourceMapper` used to retrieve source code displayed in error pages
+   */
   def sources: Option[SourceMapper]
+
+  /**
+   * `Dev`, `Prod` or `Test`
+   */
   def mode: Mode.Mode
 
   def global: GlobalSettings
@@ -212,7 +222,7 @@ trait Application {
    * @return The plugin instance used by this application.
    * @throws Error if no plugins of type T are loaded by this application.
    */
-  def plugin[T](implicit m: Manifest[T]): Option[T] = plugin(m.erasure).asInstanceOf[Option[T]]
+  def plugin[T](implicit ct: ClassTag[T]): Option[T] = plugin(ct.runtimeClass).asInstanceOf[Option[T]]
 
 
   /**
@@ -232,7 +242,6 @@ trait Application {
     case e: ClassNotFoundException => configuration.getString("application.router").map { routerName =>
       throw configuration.reportError("application.router", "Router not found: " + routerName)
     }
-    case e => throw e
   }
 
   // Reconfigure logger
@@ -262,24 +271,24 @@ trait Application {
    */
   private[play] def handleError(request: RequestHeader, e: Throwable): Result = try {
     e match {
-      case e: PlayException.UsefulException => throw e
+      case e: UsefulException => throw e
       case e: Throwable => {
 
         val source = sources.flatMap(_.sourceFor(e))
 
-        throw new PlayException(
+        throw new PlayException.ExceptionSource(
           "Execution exception",
           "[%s: %s]".format(e.getClass.getSimpleName, e.getMessage),
-          Some(e)) with PlayException.ExceptionSource {
-          def line = source.map(_._2)
-          def position = None
-          def input = source.map(_._1).map(scalax.file.Path(_))
-          def sourceName = source.map(_._1.getAbsolutePath)
+          e) {
+          def line = source.flatMap(_._2).map(_.asInstanceOf[java.lang.Integer]).orNull
+          def position = null
+          def input = source.map(_._1).map(scalax.file.Path(_).string).orNull
+          def sourceName = source.map(_._1.getAbsolutePath).orNull
         }
       }
     }
   } catch {
-    case e => try {
+    case e: Exception => try {
       Logger.error(
         """
         |
@@ -288,11 +297,11 @@ trait Application {
           case p: PlayException => "@" + p.id + " - "
           case _ => ""
         }, request.method, request.uri),
-        e)
-
+        e
+      )
       global.onError(request, e)
     } catch {
-      case e => DefaultGlobal.onError(request, e)
+      case e: Exception => DefaultGlobal.onError(request, e)
     }
   }
 
@@ -322,53 +331,6 @@ trait Application {
    * @return an existing file
    */
   def getExistingFile(relativePath: String): Option[File] = Option(getFile(relativePath)).filter(_.exists)
-
-  /**
-   * Scans the application classloader to retrieve all types within a specific package.
-   *
-   * This method is useful for some plugins, for example the EBean plugin will automatically detect all types
-   * within the models package, using:
-   * {{{
-   * val entities = application.getTypes("models")
-   * }}}
-   *
-   * Note that it is better to specify a very specific package to avoid expensive searches.
-   *
-   * @param packageName the root package to scan
-   * @return a set of types names specifying the condition
-   */
-  def getTypes(packageName: String): Set[String] = {
-    import org.reflections._
-    new Reflections(
-      new util.ConfigurationBuilder()
-        .addUrls(util.ClasspathHelper.forPackage(packageName, classloader))
-        .filterInputsBy(new util.FilterBuilder().include(util.FilterBuilder.prefix(packageName + ".")))
-        .setScanners(new scanners.TypesScanner())).getStore.get(classOf[scanners.TypesScanner]).keySet.asScala.toSet
-  }
-
-  /**
-   * Scans the application classloader to retrieve all types annotated with a specific annotation.
-   *
-   * This method is useful for some plugins, for example the EBean plugin will automatically detect all types
-   * annotated with `@javax.persistance.Entity`, using:
-   * {{{
-   * val entities = application.getTypesAnnotatedWith("models", classOf[javax.persistance.Entity])
-   * }}}
-   *
-   * Note that it is better to specify a very specific package to avoid expensive searches.
-   *
-   * @tparam T the annotation type
-   * @param packageName the root package to scan
-   * @param annotation the annotation class
-   * @return a set of types names specifying the condition
-   */
-  def getTypesAnnotatedWith[T <: java.lang.annotation.Annotation](packageName: String, annotation: Class[T]): Set[String] = {
-    import org.reflections._
-    new Reflections(
-      new util.ConfigurationBuilder()
-        .addUrls(util.ClasspathHelper.forPackage(packageName, classloader))
-        .setScanners(new scanners.TypeAnnotationsScanner())).getStore.getTypesAnnotatedWith(annotation.getName).asScala.toSet
-  }
 
   /**
    * Scans the application classloader to retrieve a resource.

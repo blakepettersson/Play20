@@ -87,7 +87,7 @@ package play.api.mvc {
           acceptLanguage.split("\\s*,\\s*").map(l => play.api.i18n.Lang(l.split(";").head)).toSeq
         }.getOrElse(Nil)
       } catch {
-        case e => e.printStackTrace(); Nil
+        case e: Exception => e.printStackTrace(); Nil
       }
     }
 
@@ -104,7 +104,7 @@ package play.api.mvc {
 
     /**
      * Check if this request accepts a given media type.
-     * @returns true if `mediaType` matches the Accept header, otherwise false
+     * @return true if `mediaType` matches the Accept header, otherwise false
      */
     def accepts(mediaType: String): Boolean = {
       accept.contains(mediaType) || accept.contains("*/*") || accept.contains(mediaType.takeWhile(_ != '/') + "/*")
@@ -300,7 +300,7 @@ package play.api.mvc {
     /**
      * Retrieve all header values associated with the given key.
      */
-    def getAll(key: String): Seq[String] = toMap.get(key).flatten.toSeq
+    def getAll(key: String): Seq[String] = (toMap.get(key):Option[Seq[String]]).toSeq.flatten
 
     /**
      * Retrieve all header keys
@@ -418,7 +418,7 @@ package play.api.mvc {
         } else urldecode(data)
       } catch {
         // fail gracefully is the session cookie is corrupted
-        case _ => Map.empty[String, String]
+        case _: Exception => Map.empty[String, String]
       }
     }
 
@@ -650,7 +650,7 @@ package play.api.mvc {
      */
     def encode(cookies: Seq[Cookie], discard: Seq[String] = Nil): String = {
       val encoder = new CookieEncoder(true)
-      cookies.foreach { c =>
+      val newCookies = cookies.map{c =>
         encoder.addCookie {
           val nc = new DefaultCookie(c.name, c.value)
           nc.setMaxAge(c.maxAge)
@@ -660,15 +660,21 @@ package play.api.mvc {
           nc.setHttpOnly(c.httpOnly)
           nc
         }
+         encoder.encode()
       }
-      discard.foreach { n =>
+      val discardedCookies = discard.map { n =>
         encoder.addCookie {
           val nc = new DefaultCookie(n, "")
           nc.setMaxAge(0)
           nc
         }
+         encoder.encode()
       }
-      encoder.encode()
+
+     if (discardedCookies.size > 0) 
+        discardedCookies.mkString("; ") + "; " + newCookies.mkString("; ")
+      else
+        newCookies.mkString("; ")
     }
 
     /**

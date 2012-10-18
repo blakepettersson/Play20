@@ -11,9 +11,8 @@ import play.api.libs.concurrent._
 import akka.actor._
 import akka.actor.Actor._
 import akka.routing._
-import akka.config._
 import akka.pattern.Patterns.ask
-import akka.util.duration._
+import scala.concurrent.util.duration._
 import akka.util.Timeout
 
 import play.api.libs.concurrent.execution.defaultContext
@@ -32,7 +31,7 @@ trait Server {
   try {
     scalax.file.Path(new java.io.File(applicationProvider.path, "logs/application.log")).delete()
   } catch {
-    case _ =>
+    case _: Exception =>
   }
 
   // Configure the logger for the first time
@@ -63,7 +62,7 @@ trait Server {
           (maybeAction.getOrElse(Action(BodyParsers.parse.empty)(_ => application.global.onHandlerNotFound(request))), application)
         }
       } catch {
-        case e => Left(e)
+        case e: Exception => Left(e)
       }
     }
 

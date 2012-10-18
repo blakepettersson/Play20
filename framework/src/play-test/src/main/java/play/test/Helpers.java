@@ -85,7 +85,21 @@ public class Helpers implements play.mvc.Http.Status, play.mvc.Http.HeaderNames 
      * Build a new fake application.
      */
     public static FakeApplication fakeApplication() {
-        return new FakeApplication(new java.io.File("."), Helpers.class.getClassLoader(), new HashMap<String,Object>(), new ArrayList<String>());
+        return new FakeApplication(new java.io.File("."), Helpers.class.getClassLoader(), new HashMap<String,Object>(), new ArrayList<String>(), null);
+    }
+
+    /**
+     * Build a new fake application.
+     */
+    public static FakeApplication fakeApplication(GlobalSettings global) {
+        return new FakeApplication(new java.io.File("."), Helpers.class.getClassLoader(), new HashMap<String,Object>(), new ArrayList<String>(), global);
+    }
+
+    /**
+     * A fake Global
+     */
+    public static GlobalSettings fakeGlobal() {
+        return new GlobalSettings();
     }
 
     /**
@@ -106,15 +120,29 @@ public class Helpers implements play.mvc.Http.Status, play.mvc.Http.HeaderNames 
      * Build a new fake application.
      */
     public static FakeApplication fakeApplication(Map<String, ? extends Object> additionalConfiguration) {
-        return new FakeApplication(new java.io.File("."), Helpers.class.getClassLoader(), additionalConfiguration, new ArrayList<String>());
+        return new FakeApplication(new java.io.File("."), Helpers.class.getClassLoader(), additionalConfiguration, new ArrayList<String>(), null);
+    }
+
+    /**
+     * Build a new fake application.
+     */
+    public static FakeApplication fakeApplication(Map<String, ? extends Object> additionalConfiguration, GlobalSettings global) {
+        return new FakeApplication(new java.io.File("."), Helpers.class.getClassLoader(), additionalConfiguration, new ArrayList<String>(), global);
+    }
+
+    /**
+     * Build a new fake application.
+     */
+    public static FakeApplication fakeApplication(Map<String, ? extends Object> additionalConfiguration, List<String> additionalPlugin) {
+        return new FakeApplication(new java.io.File("."), Helpers.class.getClassLoader(), additionalConfiguration, additionalPlugin, null);
     }
 
 
     /**
      * Build a new fake application.
      */
-    public static FakeApplication fakeApplication(Map<String, ? extends Object> additionalConfiguration, List<String> additionalPlugin) {
-        return new FakeApplication(new java.io.File("."), Helpers.class.getClassLoader(), additionalConfiguration, additionalPlugin);
+    public static FakeApplication fakeApplication(Map<String, ? extends Object> additionalConfiguration, List<String> additionalPlugin, GlobalSettings global) {
+        return new FakeApplication(new java.io.File("."), Helpers.class.getClassLoader(), additionalConfiguration, additionalPlugin, global);
     }
 
     /**
@@ -322,21 +350,21 @@ public class Helpers implements play.mvc.Http.Status, play.mvc.Http.HeaderNames 
      */
     public static void stop(FakeApplication fakeApplication) {
         play.api.Play.stop();
+        play.api.libs.concurrent.Promise$.MODULE$.resetSystem();
+        play.core.Invoker$.MODULE$.system().shutdown();
+        play.core.Invoker$.MODULE$.uninit();
+        play.api.libs.ws.WS$.MODULE$.resetClient();
     }
 
     /**
      * Executes a block of code in a running application.
      */
-    public static void running(FakeApplication fakeApplication, final Runnable block) {
+    public static synchronized void running(FakeApplication fakeApplication, final Runnable block) {
         try {
             start(fakeApplication);
             block.run();
         } finally {
             stop(fakeApplication);
-            play.api.libs.concurrent.Promise$.MODULE$.resetSystem();
-            play.core.Invoker$.MODULE$.system().shutdown();
-            play.core.Invoker$.MODULE$.uninit();
-            play.api.libs.ws.WS$.MODULE$.resetClient();
         }
     }
 
@@ -372,7 +400,7 @@ public class Helpers implements play.mvc.Http.Status, play.mvc.Http.HeaderNames 
     /**
      * Executes a block of code in a running server.
      */
-    public static void running(TestServer server, final Runnable block) {
+    public static synchronized void running(TestServer server, final Runnable block) {
         try {
             start(server);
             block.run();
@@ -384,7 +412,7 @@ public class Helpers implements play.mvc.Http.Status, play.mvc.Http.HeaderNames 
     /**
      * Executes a block of code in a running server, with a test browser.
      */
-    public static void running(TestServer server, Class<? extends WebDriver> webDriver, final Callback<TestBrowser> block) {
+    public static synchronized void running(TestServer server, Class<? extends WebDriver> webDriver, final Callback<TestBrowser> block) {
         TestBrowser browser = null;
         TestServer startedServer = null;
         try {

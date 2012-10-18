@@ -12,7 +12,7 @@ import java.util.Locale
 import play.api.libs.iteratee.{Iteratee, Cont, Input, Done}
 import play.api.test.TestServer
 import play.api.libs.ws.ResponseHeaders
-import play.api.libs.concurrent.execution.defaultContext
+import scala.concurrent.ExecutionContext.Implicits.global
 
 
 class FunctionalSpec extends Specification {
@@ -22,6 +22,12 @@ class FunctionalSpec extends Specification {
 
     val startDate = cal.getTime()
 
+    "charset should be defined" in {
+      running(TestServer(9003), HTMLUNIT) { browser =>
+        val h = await(WS.url("http://localhost:9003/public/stylesheets/main.css").get)
+        h.header("Content-Type").get must equalTo("text/css; charset=utf-8")
+      }
+    } 
     "call onClose for Ok.sendFile responses" in {
       import java.io.File
       running(TestServer(9003), HTMLUNIT) { browser =>

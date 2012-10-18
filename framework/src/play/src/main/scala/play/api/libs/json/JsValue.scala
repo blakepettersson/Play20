@@ -187,6 +187,8 @@ case class JsObject(fields: Seq[(String, JsValue)]) extends JsValue {
    */
   def values: Set[JsValue] = fields.map(_._2).toSet
 
+  def fieldSet: Set[(String, JsValue)] = fields.toSet
+
   /**
    * Merge this object with an other one. Values from other override value of the current object.
    */
@@ -265,6 +267,20 @@ case class JsObject(fields: Seq[(String, JsValue)]) extends JsValue {
     JsObject(step(fields.toList, other.fields.toList))
   }
 
+  override def equals(other: Any): Boolean =
+    other match {
+
+      case that: JsObject =>
+        (that canEqual this) &&
+        fieldSet == that.fieldSet
+
+      case _ => false
+    }
+
+  def canEqual(other: Any): Boolean = other.isInstanceOf[JsObject]
+
+  override def hashCode: Int = fieldSet.hashCode()
+
 }
 
 // -- Serializers.
@@ -277,7 +293,13 @@ private[json] class JsValueSerializer extends JsonSerializer[JsValue] {
       case JsNumber(v) => json.writeNumber(v.bigDecimal)
       case JsString(v) => json.writeString(v)
       case JsBoolean(v) => json.writeBoolean(v)
-      case JsArray(elements) => json.writeObject(elements)
+      case JsArray(elements) => {
+        json.writeStartArray()
+        elements.foreach { t =>
+          json.writeObject(t)
+        }
+        json.writeEndArray()
+      }
       case JsObject(values) => {
         json.writeStartObject()
         values.foreach { t =>
@@ -363,8 +385,6 @@ private[json] class JsValueDeserializer(factory: TypeFactory, klass: Class[_]) e
       case (JsonToken.END_OBJECT, ReadingMap(content) :: stack) => (Some(JsObject(content)), stack)
 
       case (JsonToken.END_OBJECT, _) => throw new RuntimeException("We should have been reading an object, something got wrong")
-
-      case _ => throw ctxt.mappingException(classOf[JsValue])
     }
 
     // Read ahead
@@ -415,11 +435,16 @@ private[json] class PlaySerializers extends Serializers.Base {
   }
 }
 
-private[json] object JerksonJson extends com.codahale.jerkson.Json {
+private[json] object JacksonJson{
+
   import org.codehaus.jackson.Version
   import org.codehaus.jackson.map.module.SimpleModule
   import org.codehaus.jackson.map.Module.SetupContext
 
+  private[this]  val classLoader = Thread.currentThread().getContextClassLoader
+
+  private[this] val mapper = new ObjectMapper
+  
   object module extends SimpleModule("PlayJson", Version.unknownVersion()) {
     override def setupModule(context: SetupContext) {
       context.addDeserializers(new PlayDeserializers(classLoader))
@@ -427,5 +452,27 @@ private[json] object JerksonJson extends com.codahale.jerkson.Json {
     }
   }
   mapper.registerModule(module)
+
+  private[this] lazy val jsonFactory = new org.codehaus.jackson.JsonFactory(mapper)
+
+  private[this] def stringJsonGenerator(out: java.io.StringWriter) = jsonFactory.createJsonGenerator(out)
+  
+  private[this] def jsonParser(c: String) = jsonFactory.createJsonParser(c)
+
+  
+
+  def parseJsValue(input: String): JsValue = {
+    mapper.readValue(jsonParser(input), classOf[JsValue])
+  }
+
+  def generateFromJsValue(jsValue: JsValue): String = {
+    val sw = new java.io.StringWriter
+    val gen = stringJsonGenerator(sw)
+    mapper.writeValue(gen, jsValue)
+    sw.flush
+    sw.getBuffer.toString
+  }
+
+ 
 
 }

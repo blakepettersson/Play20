@@ -1,8 +1,6 @@
 package play.api.test
 
 import play.api._
-import db.DBPlugin
-import db.evolutions.Evolutions
 import play.api.mvc._
 import play.api.http._
 
@@ -33,15 +31,17 @@ object Helpers extends Status with HeaderNames {
    * Executes a block of code in a running application.
    */
   def running[T](fakeApp: FakeApplication)(block: => T): T = {
-    try {
-      Play.start(fakeApp)
-      block
-    } finally {
-      Play.stop()
-      play.api.libs.concurrent.Promise.resetSystem()
-      play.core.Invoker.system.shutdown()
-      play.core.Invoker.uninit()
-      play.api.libs.ws.WS.resetClient()
+    synchronized {
+      try {
+        Play.start(fakeApp)
+        block
+      } finally {
+        Play.stop()
+        play.api.libs.concurrent.Promise.resetSystem()
+        play.core.Invoker.system.shutdown()
+        play.core.Invoker.uninit()
+        play.api.libs.ws.WS.resetClient()
+      }
     }
   }
 
@@ -49,11 +49,13 @@ object Helpers extends Status with HeaderNames {
    * Executes a block of code in a running server.
    */
   def running[T](testServer: TestServer)(block: => T): T = {
-    try {
-      testServer.start()
-      block
-    } finally {
-      testServer.stop()
+    synchronized {
+      try {
+        testServer.start()
+        block
+      } finally {
+        testServer.stop()
+      }
     }
   }
 
@@ -62,27 +64,25 @@ object Helpers extends Status with HeaderNames {
    */
   def running[T, WEBDRIVER <: WebDriver](testServer: TestServer, webDriver: Class[WEBDRIVER])(block: TestBrowser => T): T = {
     var browser: TestBrowser = null
-    try {
-      testServer.start()
-      browser = TestBrowser.of(webDriver)
-      block(browser)
-    } finally {
-      if (browser != null) {
-        browser.quit()
+    synchronized {
+      try {
+        testServer.start()
+        browser = TestBrowser.of(webDriver)
+        block(browser)
+      } finally {
+        if (browser != null) {
+          browser.quit()
+        }
+        testServer.stop()
       }
-      testServer.stop()
     }
   }
 
   /**
-   * Apply pending evolutions for the given DB.
+   * The port to use for a test server. Defaults to 19001. May be configured using the system property
+   * testserver.port
    */
-  def evolutionFor(dbName: String, path: java.io.File = new java.io.File(".")) {
-    Play.current.plugin[DBPlugin] map { db =>
-      val script = Evolutions.evolutionScript(db.api, path, db.getClass.getClassLoader, dbName)
-      Evolutions.applyScript(db.api, dbName, script)
-    }
-  }
+  lazy val testServerPort = Option(System.getProperty("testserver.port")).map(_.toInt).getOrElse(19001)
 
   /**
    * Extracts the Content-Type of this Content value.
@@ -126,7 +126,6 @@ object Helpers extends Status with HeaderNames {
       bodyEnumerator(readAsBytes).flatMap(_.run).value1.get
     }
     case AsyncResult(p) => contentAsBytes(p.await.get)
-    case r => sys.error("Cannot extract the body content from a result of type " + r.getClass.getName)
   }
 
   /**
@@ -135,7 +134,6 @@ object Helpers extends Status with HeaderNames {
   def status(of: Result): Int = of match {
     case PlainResult(status, _) => status
     case AsyncResult(p) => status(p.await.get)
-    case r => sys.error("Cannot extract the status from a result of type " + r.getClass.getName)
   }
 
   /**
@@ -178,7 +176,6 @@ object Helpers extends Status with HeaderNames {
   def headers(of: Result): Map[String, String] = of match {
     case PlainResult(_, headers) => headers
     case AsyncResult(p) => headers(p.await.get)
-    case r => sys.error("Cannot extract the headers from a result of type " + r.getClass.getName)
   }
 
   /**
@@ -248,12 +245,12 @@ object Helpers extends Status with HeaderNames {
   /**
    * Block until a Promise is redeemed.
    */
-  def await[T](p: play.api.libs.concurrent.Promise[T]): T = await(p, 5000)
+  def await[T](p: scala.concurrent.Future[T]): T = await(p, 5000)
 
   /**
    * Block until a Promise is redeemed with the specified timeout.
    */
-  def await[T](p: play.api.libs.concurrent.Promise[T], timeout: Long, unit: java.util.concurrent.TimeUnit = java.util.concurrent.TimeUnit.MILLISECONDS): T = p.await(timeout, unit).get
+  def await[T](p: scala.concurrent.Future[T], timeout: Long, unit: java.util.concurrent.TimeUnit = java.util.concurrent.TimeUnit.MILLISECONDS): T = p.await(timeout, unit).get
 
   /**
    * Constructs a in-memory (h2) database configuration to add to a FakeApplication.

@@ -1,7 +1,7 @@
 package models
 
 import akka.actor._
-import akka.util.duration._
+import scala.concurrent.util.duration._
 
 import play.api._
 import play.api.libs.json._
@@ -53,8 +53,9 @@ object ChatRoom {
     roomActor
   }
 
-  def join(username:String):Promise[(Iteratee[JsValue,_],Enumerator[JsValue])] = {
-    (default ? Join(username)).asPromise.map {
+  def join(username:String):scala.concurrent.Future[(Iteratee[JsValue,_],Enumerator[JsValue])] = {
+
+    (default ? Join(username)).map {
       
       case Connected(enumerator) => 
       

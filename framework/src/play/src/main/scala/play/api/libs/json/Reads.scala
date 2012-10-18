@@ -4,6 +4,7 @@ import scala.collection._
 import Json._
 import scala.annotation.implicitNotFound
 import play.api.data.validation.ValidationError
+import reflect.ClassTag
 
 /**
  * Json deserializer: write an implicit to define a deserializer for any type.
@@ -40,15 +41,17 @@ trait Reads[A] {
   def collect[B](error:ValidationError)(f: PartialFunction[A,B]) =
     Reads[B] { json => self.reads(json).collect(error)(f) }
 
-  /**
-   * builds a JsErrorObj JsObject
-   * {
-   *    __VAL__ : "current known erroneous jsvalue",
-   *    __ERR__ : "the i18n key of the error msg",
-   *    __ARGS__ : "the args for the error msg" (JsArray)
-   * } 
-   */
-  def JsErrorObj(knownValue: JsValue, key: String, args: JsValue*) = Reads.JsErrorObj(knownValue, key, args: _*)
+  def orElse(v: Reads[A]): Reads[A] = 
+    Reads[A] { json => self.reads(json).orElse(v.reads(json)) }
+
+  def compose[B <: JsValue](rb: Reads[B]): Reads[A] = 
+    Reads[A] { js => rb.reads(js) match {
+      case JsSuccess(b, p) => this.reads(b).repath(p)
+      case JsError(e) => JsError(e)
+    } }
+
+  def andThen[B](rb: Reads[B])(implicit witness: A <:< JsValue): Reads[B] = rb.compose(this.map(witness))
+
 }
 
 /**
@@ -84,6 +87,7 @@ object Reads extends ConstraintReads with PathReads with DefaultReads {
       }
     }
     def empty:Reads[Nothing] = new Reads[Nothing] { def reads(js: JsValue) = JsError(Seq()) }
+
   }
 
   def apply[A](f: JsValue => JsResult[A]): Reads[A] = new Reads[A] {
@@ -94,6 +98,20 @@ object Reads extends ConstraintReads with PathReads with DefaultReads {
     def fmap[A, B](reads: Reads[A], f: A => B): Reads[B] = a.map(reads, f)
   }
 
+
+  implicit object JsObjectMonoid extends Monoid[JsObject] {
+    def append(o1: JsObject, o2: JsObject) = o1 ++ o2
+    def identity = JsObject(Seq())
+  }
+
+  implicit val JsObjectReducer = Reducer[JsObject, JsObject]( o => o )
+
+  implicit object JsArrayMonoid extends Monoid[JsArray] {
+    def append(a1: JsArray, a2: JsArray) = a1 ++ a2
+    def identity = JsArray()
+  }
+
+  implicit val JsArrayReducer = Reducer[JsValue, JsArray]( js => JsArray(Seq(js)) )
 }
 
 /**
@@ -312,12 +330,32 @@ trait DefaultReads {
     }
   }
 
-
   /**
    * Deserializer for JsValue.
    */
   implicit object JsValueReads extends Reads[JsValue] {
     def reads(json: JsValue) = JsSuccess(json)
+  }
+
+  implicit object JsStringReads extends Reads[JsString] {
+    def reads(json: JsValue) = json match {
+      case s: JsString => JsSuccess(s)
+      case _ => JsError(Seq(JsPath() -> Seq(ValidationError("validate.error.expected.jsstring"))))
+    }
+  }
+
+  implicit object JsNumberReads extends Reads[JsNumber] {
+    def reads(json: JsValue) = json match {
+      case n: JsNumber => JsSuccess(n)
+      case _ => JsError(Seq(JsPath() -> Seq(ValidationError("validate.error.expected.jsnumber"))))
+    }
+  }
+
+  implicit object JsBooleanReads extends Reads[JsBoolean] {
+    def reads(json: JsValue) = json match {
+      case b: JsBoolean => JsSuccess(b)
+      case _ => JsError(Seq(JsPath() -> Seq(ValidationError("validate.error.expected.jsboolean"))))
+    }
   }
 
   implicit def OptionReads[T](implicit fmt: Reads[T]): Reads[Option[T]] = new Reads[Option[T]] {
@@ -397,7 +435,7 @@ trait DefaultReads {
   /**
    * Deserializer for Array[T] types.
    */
-  implicit def ArrayReads[T: Reads: Manifest]: Reads[Array[T]] = new Reads[Array[T]] {
+  implicit def ArrayReads[T: Reads: ClassTag]: Reads[Array[T]] = new Reads[Array[T]] {
     def reads(json: JsValue) = json.validate[List[T]].map( _.toArray )
   }
 

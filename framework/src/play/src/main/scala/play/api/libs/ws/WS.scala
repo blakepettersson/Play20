@@ -1,6 +1,6 @@
 package play.api.libs.ws
 
-import play.api.libs.concurrent._
+import scala.concurrent.{Future, Promise}
 import play.api.libs.iteratee._
 import play.api.libs.iteratee.Input._
 import play.api.http.{ Writeable, ContentTypeOf }
@@ -27,13 +27,14 @@ import play.core.utils.CaseInsensitiveOrdered
  * WS.url("http://example.com/item").post("content")
  * }}}
  *
- * The value returned is a Promise[Response],
+ * The value returned is a Future[Response],
  * and you should use Play's asynchronous mechanisms to use this response.
  *
  */
 object WS {
 
   import com.ning.http.client.Realm.{ AuthScheme, RealmBuilder }
+  import javax.net.ssl.SSLContext
 
   private var clientHolder: Option[AsyncHttpClient] = None
 
@@ -46,6 +47,7 @@ object WS {
     }.getOrElse(play.api.Logger.debug("WS client was reset without being used"))
     clientHolder = None
   }
+
   /**
    * retrieves or creates underlying HTTP client.
    */
@@ -60,6 +62,9 @@ object WS {
 
       playConfig.flatMap(_.getString("ws.useragent")).map { useragent =>
         asyncHttpConfig.setUserAgent(useragent)
+      }
+      if (playConfig.flatMap(_.getBoolean("ws.acceptAnyCertificate")).getOrElse(false) == false) {
+        asyncHttpConfig.setSSLContext(SSLContext.getDefault)
       }
       val innerClient = new AsyncHttpClient(asyncHttpConfig.build())
       clientHolder = Some(innerClient)
@@ -109,7 +114,14 @@ object WS {
      * Return the current headers of the request being constructed
      */
     def allHeaders: Map[String, Seq[String]] = {
-      mapAsScalaMapConverter(request.getHeaders()).asScala.map(e => e._1 -> e._2.asScala.toSeq).toMap
+      mapAsScalaMapConverter(request.asInstanceOf[com.ning.http.client.Request].getHeaders()).asScala.map(e => e._1 -> e._2.asScala.toSeq).toMap
+    }
+
+    /**
+     * Return the current query string parameters
+     */
+    def queryString: Map[String, Seq[String]] = {
+      mapAsScalaMapConverter(request.asInstanceOf[com.ning.http.client.Request].getParams()).asScala.map(e => e._1 -> e._2.asScala.toSeq).toMap
     }
 
     /**
@@ -135,17 +147,17 @@ object WS {
       //todo: wrap the case insensitive ning map instead of creating a new one (unless perhaps immutabilty is important)
       TreeMap(res.toSeq: _*)(CaseInsensitiveOrdered)
     }
-    private[libs] def execute: Promise[Response] = {
+    private[libs] def execute: Future[Response] = {
       import com.ning.http.client.AsyncCompletionHandler
       var result = Promise[Response]()
       calculator.map(_.sign(this))
       WS.client.executeRequest(this.build(), new AsyncCompletionHandler[AHCResponse]() {
         override def onCompleted(response: AHCResponse) = {
-          result.redeem(Response(response))
+          result.success(Response(response))
           response
         }
         override def onThrowable(t: Throwable) = {
-          result.redeem(throw t)
+          result.failure(t)
         }
       })
       result.future
@@ -212,7 +224,7 @@ object WS {
       super.setUrl(url)
     }
 
-    private[libs] def executeStream[A](consumer: ResponseHeaders => Iteratee[Array[Byte], A]): Promise[Iteratee[Array[Byte], A]] = {
+    private[libs] def executeStream[A](consumer: ResponseHeaders => Iteratee[Array[Byte], A]): Future[Iteratee[Array[Byte], A]] = {
       import com.ning.http.client.AsyncHandler
       var doneOrError = false
       calculator.map(_.sign(this))
@@ -241,7 +253,7 @@ object WS {
               case Step.Done(a, e) => {
                 doneOrError = true
                 val it = Done(a, e)
-                iterateeP.redeem(it)
+                iterateeP.success(it)
                 it
               }
 
@@ -252,7 +264,7 @@ object WS {
               case Step.Error(e, input) => {
                 doneOrError = true
                 val it = Error(e, input)
-                iterateeP.redeem(it)
+                iterateeP.success(it)
                 it
               }
             }
@@ -264,11 +276,11 @@ object WS {
         }
 
         override def onCompleted() = {
-          Option(iteratee).map(iterateeP.redeem(_))
+          Option(iteratee).map(iterateeP.success(_))
         }
 
         override def onThrowable(t: Throwable) = {
-          iterateeP.redeem(throw t)
+          iterateeP.failure(t)
         }
       })
       iterateeP.future
@@ -341,51 +353,51 @@ object WS {
      * performs a get with supplied body
      */
 
-    def get(): Promise[Response] = prepare("GET").execute
+    def get(): Future[Response] = prepare("GET").execute
 
     /**
      * performs a get with supplied body
      * @param consumer that's handling the response
      */
-    def get[A](consumer: ResponseHeaders => Iteratee[Array[Byte], A]): Promise[Iteratee[Array[Byte], A]] =
+    def get[A](consumer: ResponseHeaders => Iteratee[Array[Byte], A]): Future[Iteratee[Array[Byte], A]] =
       prepare("GET").executeStream(consumer)
 
     /**
      * Perform a POST on the request asynchronously.
      */
-    def post[T](body: T)(implicit wrt: Writeable[T], ct: ContentTypeOf[T]): Promise[Response] = prepare("POST", body).execute
+    def post[T](body: T)(implicit wrt: Writeable[T], ct: ContentTypeOf[T]): Future[Response] = prepare("POST", body).execute
 
     /**
      * performs a POST with supplied body
      * @param consumer that's handling the response
      */
-    def postAndRetrieveStream[A, T](body: T)(consumer: ResponseHeaders => Iteratee[Array[Byte], A])(implicit wrt: Writeable[T], ct: ContentTypeOf[T]): Promise[Iteratee[Array[Byte], A]] = prepare("POST", body).executeStream(consumer)
+    def postAndRetrieveStream[A, T](body: T)(consumer: ResponseHeaders => Iteratee[Array[Byte], A])(implicit wrt: Writeable[T], ct: ContentTypeOf[T]): Future[Iteratee[Array[Byte], A]] = prepare("POST", body).executeStream(consumer)
 
     /**
      * Perform a PUT on the request asynchronously.
      */
-    def put[T](body: T)(implicit wrt: Writeable[T], ct: ContentTypeOf[T]): Promise[Response] = prepare("PUT", body).execute
+    def put[T](body: T)(implicit wrt: Writeable[T], ct: ContentTypeOf[T]): Future[Response] = prepare("PUT", body).execute
 
     /**
      * performs a PUT with supplied body
      * @param consumer that's handling the response
      */
-    def putAndRetrieveStream[A, T](body: T)(consumer: ResponseHeaders => Iteratee[Array[Byte], A])(implicit wrt: Writeable[T], ct: ContentTypeOf[T]): Promise[Iteratee[Array[Byte], A]] = prepare("PUT", body).executeStream(consumer)
+    def putAndRetrieveStream[A, T](body: T)(consumer: ResponseHeaders => Iteratee[Array[Byte], A])(implicit wrt: Writeable[T], ct: ContentTypeOf[T]): Future[Iteratee[Array[Byte], A]] = prepare("PUT", body).executeStream(consumer)
 
     /**
      * Perform a DELETE on the request asynchronously.
      */
-    def delete(): Promise[Response] = prepare("DELETE").execute
+    def delete(): Future[Response] = prepare("DELETE").execute
 
     /**
      * Perform a HEAD on the request asynchronously.
      */
-    def head(): Promise[Response] = prepare("HEAD").execute
+    def head(): Future[Response] = prepare("HEAD").execute
 
     /**
      * Perform a OPTIONS on the request asynchronously.
      */
-    def options(): Promise[Response] = prepare("OPTIONS").execute
+    def options(): Future[Response] = prepare("OPTIONS").execute
 
     private[play] def prepare(method: String) = {
       val request = new WSRequest(method, auth, calc).setUrl(url)

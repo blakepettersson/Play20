@@ -4,8 +4,17 @@ import Keys._
 import PlayKeys._
 
 trait PlaySettings {
-  this: PlayCommands =>
-
+  this: PlayCommands with PlayPositionMapper =>
+  
+  protected def whichLang(name: String): Seq[Setting[_]] = {
+    if (name == JAVA) {
+      defaultJavaSettings
+    } else if (name == SCALA) {
+      defaultScalaSettings
+    } else {
+      Seq.empty
+    }
+  }
   lazy val defaultJavaSettings = Seq[Setting[_]](
 
     templatesImport ++= Seq(
@@ -19,12 +28,11 @@ trait PlaySettings {
       "scala.collection.JavaConverters._",
 
       "play.api.i18n._",
-      "play.api.templates.PlayMagicForJava._",
+      "play.core.j.PlayMagicForJava._",
 
       "play.mvc._",
       "play.data._",
       "play.api.data.Field",
-      "com.avaje.ebean._",
 
       "play.mvc.Http.Context.Implicit._",
 
@@ -58,6 +66,8 @@ trait PlaySettings {
   )
 
   lazy val defaultSettings = Seq[Setting[_]](
+
+    scalaVersion := play.core.PlayVersion.scalaVersion,
 
     playPlugin := false,
 
@@ -95,7 +105,6 @@ trait PlaySettings {
 
     parallelExecution in Test := false,
 
-    //TODO: this should be re-enabled once we know more about xsbt/issues/512
     fork in Test := false,
 
     testOptions in Test += Tests.Setup { loader =>
@@ -116,12 +125,12 @@ trait PlaySettings {
 
     testResultReporterReset <<= testResultReporterResetTask,
 
-    sourceGenerators in Compile <+= (confDirectory, sourceManaged in Compile, routesImport) map RouteFiles,
+    sourceGenerators in Compile <+= (state, confDirectory, sourceManaged in Compile, routesImport) map RouteFiles,
 
     // Adds config directory's source files to continuous hot reloading
     watchSources <+= confDirectory map { all => all },
 
-    sourceGenerators in Compile <+= (sourceDirectory in Compile, sourceManaged in Compile, templatesTypes, templatesImport) map ScalaTemplates,
+    sourceGenerators in Compile <+= (state, sourceDirectory in Compile, sourceManaged in Compile, templatesTypes, templatesImport) map ScalaTemplates,
 
     // Adds app directory's source files to continuous hot reloading
     watchSources <++= baseDirectory map { path => ((path / "app") ** "*").get },
@@ -132,7 +141,7 @@ trait PlaySettings {
 
     copyResources in Compile <<= (copyResources in Compile, playCopyAssets) map { (r, pr) => r ++ pr },
 
-    mainClass in (Compile, run) := Some(classOf[play.core.server.NettyServer].getName),
+    mainClass in (Compile, run) := Some("play.core.server.NettyServer"),
 
     compile in (Compile) <<= PostCompile(scope = Compile),
 
@@ -156,9 +165,7 @@ trait PlaySettings {
 
     cleanFiles <+= distDirectory,
 
-    ebeanEnabled := false,
-
-    logManager <<= extraLoggers(PlayLogManager.default),
+    logManager <<= extraLoggers(PlayLogManager.default(playPositionMapper)),
 
     ivyLoggingLevel := UpdateLogging.DownloadOnly,
 
@@ -180,7 +187,7 @@ trait PlaySettings {
 
     playAssetsDirectories <+= baseDirectory / "public",
 
-    requireSubFolder := "rjs",
+    requireJsSupport := true,
 
     requireNativePath := None,
 

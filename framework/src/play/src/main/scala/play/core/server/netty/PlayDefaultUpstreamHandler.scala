@@ -89,7 +89,7 @@ private[server] class PlayDefaultUpstreamHandler(server: Server, allChannels: De
           def path = nettyUri.getPath
           def method = nettyHttpRequest.getMethod.getName
           def version = nettyVersion.getText
-					def queryString = parameters
+          def queryString = parameters
           def headers = rHeaders
           lazy val remoteAddress = rRemoteAddress
           def username = None
@@ -303,7 +303,7 @@ private[server] class PlayDefaultUpstreamHandler(server: Server, allChannels: De
               val enumerator = websocketHandshake(ctx, nettyHttpRequest, e)(ws.frameFormatter)
               f(requestHeader)(enumerator, socketOut(ctx)(ws.frameFormatter))
             } catch {
-              case e => e.printStackTrace
+              case e: Exception => e.printStackTrace()
             }
 
           //handle bad websocket request
@@ -357,7 +357,7 @@ private[server] class PlayDefaultUpstreamHandler(server: Server, allChannels: De
               Enumerator(body).andThen(Enumerator.enumInput(EOF))
             }
 
-            eventuallyBodyParser.flatMap(it => bodyEnumerator |>> it): Promise[Iteratee[Array[Byte], Result]]
+            eventuallyBodyParser.flatMap(it => bodyEnumerator |>> it): scala.concurrent.Future[Iteratee[Array[Byte], Result]]
 
           }
 

@@ -9,6 +9,7 @@ import java.util.UUID
 import scala.annotation._
 
 import scala.collection.JavaConverters._
+import reflect.ClassTag
 
 /**
  * Binder for query string parameters.
@@ -129,7 +130,7 @@ trait QueryStringBindable[A] {
  *
  * {{{
  *   object User {
- *     implicit def pathBinder(implicit intBinder: QueryStringBindable[Int]) = new PathBindable[User] {
+ *     implicit def pathBinder(implicit intBinder: PathBindable[Int]) = new PathBindable[User] {
  *       override def bind(key: String, value: String): Either[String, User] = {
  *         for {
  *           id <- intBinder.bind(key, value).right
@@ -426,22 +427,24 @@ object QueryStringBindable {
   /**
    * QueryString binder for QueryStringBindable.
    */
-  implicit def javaQueryStringBindable[T <: play.mvc.QueryStringBindable[T]](implicit m: Manifest[T]) = new QueryStringBindable[T] {
+  implicit def javaQueryStringBindable[T <: play.mvc.QueryStringBindable[T]](implicit ct: ClassTag[T]) = new QueryStringBindable[T] {
     def bind(key: String, params: Map[String, Seq[String]]) = {
       try {
-        val o = m.erasure.newInstance.asInstanceOf[T].bind(key, params.mapValues(_.toArray).asJava)
+        val o = ct.runtimeClass.newInstance.asInstanceOf[T].bind(key, params.mapValues(_.toArray).asJava)
         if (o.isDefined) {
           Some(Right(o.get))
         } else {
           None
         }
       } catch {
-        case e => Some(Left(e.getMessage))
+        case e: Exception => Some(Left(e.getMessage))
       }
     }
     def unbind(key: String, value: T) = {
       value.unbind(key)
     }
+    override def javascriptUnbind = Option(ct.runtimeClass.newInstance.asInstanceOf[T].javascriptUnbind())
+      .getOrElse(super.javascriptUnbind)
   }
 
 }
@@ -557,16 +560,18 @@ object PathBindable {
   /**
    * Path binder for Java PathBindable
    */
-  implicit def javaPathBindable[T <: play.mvc.PathBindable[T]](implicit m: Manifest[T]) = new PathBindable[T] {
+  implicit def javaPathBindable[T <: play.mvc.PathBindable[T]](implicit ct: ClassTag[T]) = new PathBindable[T] {
     def bind(key: String, value: String) = {
       try {
-        Right(m.erasure.newInstance.asInstanceOf[T].bind(key, value))
+        Right(ct.runtimeClass.newInstance.asInstanceOf[T].bind(key, value))
       } catch {
-        case e => Left(e.getMessage)
+        case e: Exception => Left(e.getMessage)
       }
     }
     def unbind(key: String, value: T) = {
       value.unbind(key)
     }
+    override def javascriptUnbind = Option(ct.runtimeClass.newInstance.asInstanceOf[T].javascriptUnbind())
+      .getOrElse(super.javascriptUnbind)
   }
 }

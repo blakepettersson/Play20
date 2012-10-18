@@ -3,9 +3,9 @@ package play.core
 import java.io._
 import java.net._
 
-import akka.dispatch.Future
-import akka.dispatch.Await
-import akka.util.duration._
+import scala.concurrent.Future
+import scala.concurrent.Await
+import scala.concurrent.util.duration._
 
 import play.api._
 import play.api.mvc._
@@ -15,17 +15,11 @@ import play.api.mvc._
  */
 trait SourceMapper {
 
-  def sourceOf(className: String): Option[File]
+  def sourceOf(className: String, line: Option[Int] = None): Option[(File, Option[Int])]
 
-  def sourceFor(e: Throwable): Option[(File, Int)] = {
-    e.getStackTrace.find(element => sourceOf(element.getClassName).isDefined).map { interestingStackTrace =>
-      sourceOf(interestingStackTrace.getClassName).get -> interestingStackTrace.getLineNumber
-    }.map {
-      case (source, line) => {
-        play.templates.MaybeGeneratedSource.unapply(source).map { generatedSource =>
-          generatedSource.source.get -> generatedSource.mapLine(line)
-        }.getOrElse(source -> line)
-      }
+  def sourceFor(e: Throwable): Option[(File, Option[Int])] = {
+    e.getStackTrace.find(element => sourceOf(element.getClassName).isDefined).flatMap { interestingStackTrace =>
+      sourceOf(interestingStackTrace.getClassName, Option(interestingStackTrace.getLineNumber))
     }
   }
 
@@ -38,6 +32,10 @@ trait ApplicationProvider {
   def path: File
   def get: Either[Throwable, Application]
   def handleWebCommand(requestHeader: play.api.mvc.RequestHeader): Option[Result] = None
+}
+
+trait HandleWebCommandSupport {
+  def handleWebCommand(request: play.api.mvc.RequestHeader, sbtLink: play.core.SBTLink, path: java.io.File): Option[Result]
 }
 
 /**
@@ -71,12 +69,22 @@ class TestApplication(application: Application) extends ApplicationProvider {
  */
 class ReloadableApplication(sbtLink: SBTLink) extends ApplicationProvider {
 
+  // Use plain Java call here in case of scala classloader mess
+  {
+    if(System.getProperty("play.debug.classpath") == "true") {
+      System.out.println("\n---- Current ClassLoader ----\n")
+      System.out.println(this.getClass.getClassLoader) 
+      System.out.println("\n---- The where is Scala? test ----\n")
+      System.out.println(this.getClass.getClassLoader.getResource("scala/Predef$.class"))
+    }
+  }
+
   lazy val path = sbtLink.projectPath
 
   println(play.utils.Colors.magenta("--- (Running the application from SBT, auto-reloading is enabled) ---"))
   println()
 
-  var lastState: Either[Throwable, Application] = Left(PlayException("Not initialized", "?"))
+  var lastState: Either[Throwable, Application] = Left(new PlayException("Not initialized", "?"))
 
   def get = {
 
@@ -88,7 +96,7 @@ class ReloadableApplication(sbtLink: SBTLink) extends ApplicationProvider {
       // Because we are on DEV mode here, it doesn't really matter
       // but it's more coherent with the way it works in PROD mode.
 
-      implicit def dispatcher = play.core.Invoker.system.dispatcher
+      implicit def dispatcher: scala.concurrent.ExecutionContext = play.core.Invoker.system.dispatcher
 
       Await.result(Future {
 
@@ -111,8 +119,17 @@ class ReloadableApplication(sbtLink: SBTLink) extends ApplicationProvider {
 
               val reloadable = this
 
+              // First, stop the old application if it exists
+              Play.stop()
+
               val newApplication = new DefaultApplication(reloadable.path, projectClassloader, Some(new SourceMapper {
-                def sourceOf(className: String) = Option(sbtLink.findSource(className))
+                def sourceOf(className: String, line: Option[Int]) = {
+                  Option(sbtLink.findSource(className, line.map(_.asInstanceOf[java.lang.Integer]).orNull)).flatMap {
+                    case Array(file: java.io.File, null) => Some((file, None))
+                    case Array(file: java.io.File, line: java.lang.Integer) => Some((file, Some(line)))
+                    case _ => None
+                  }
+                }
               }),Mode.Dev)
 
               Play.start(newApplication)
@@ -123,7 +140,11 @@ class ReloadableApplication(sbtLink: SBTLink) extends ApplicationProvider {
                 lastState = Left(e)
                 lastState
               }
-              case e => {
+              case e: Exception => {
+                lastState = Left(UnexpectedException(unexpected = Some(e)))
+                lastState
+              }
+              case e: LinkageError => {
                 lastState = Left(UnexpectedException(unexpected = Some(e)))
                 lastState
               }
@@ -146,9 +167,6 @@ class ReloadableApplication(sbtLink: SBTLink) extends ApplicationProvider {
 
     import play.api.mvc.Results._
 
-    val applyEvolutions = """/@evolutions/apply/([a-zA-Z0-9_]+)""".r
-    val resolveEvolutions = """/@evolutions/resolve/([a-zA-Z0-9_]+)/([0-9]+)""".r
-
     val documentation = """/@documentation""".r
     val book = """/@documentation/Book""".r
     val apiDoc = """/@documentation/api/(.*)""".r
@@ -158,30 +176,6 @@ class ReloadableApplication(sbtLink: SBTLink) extends ApplicationProvider {
     val documentationHome = Option(System.getProperty("play.home")).map(ph => new java.io.File(ph + "/../documentation"))
 
     request.path match {
-
-      case applyEvolutions(db) => {
-
-        import play.api.db._
-        import play.api.db.evolutions._
-
-        Some {
-          OfflineEvolutions.applyScript(path, Play.current.classloader, db)
-          sbtLink.forceReload()
-          Redirect(request.queryString.get("redirect").filterNot(_.isEmpty).map(_(0)).getOrElse("/"))
-        }
-      }
-
-      case resolveEvolutions(db, rev) => {
-
-        import play.api.db._
-        import play.api.db.evolutions._
-
-        Some {
-          OfflineEvolutions.resolve(path, Play.current.classloader, db, rev.toInt)
-          sbtLink.forceReload()
-          Redirect(request.queryString.get("redirect").filterNot(_.isEmpty).map(_(0)).getOrElse("/"))
-        }
-      }
 
       case documentation() => {
 
@@ -199,7 +193,7 @@ class ReloadableApplication(sbtLink: SBTLink) extends ApplicationProvider {
           documentationHome.flatMap { home =>
             Option(new java.io.File(home, "manual/book/Book")).filter(_.exists)
           }.map { book =>
-            val pages = Path(book).slurpString.split('\n').toSeq.map(_.trim)
+            val pages = Path(book).string.split('\n').toSeq.map(_.trim)
             Ok(views.html.play20.book(pages))
           }.getOrElse(NotFound("Resource not found [Book]"))
         }
@@ -282,8 +276,8 @@ class ReloadableApplication(sbtLink: SBTLink) extends ApplicationProvider {
               Ok(
                 views.html.play20.manual(
                   page,
-                  Some(sbtLink.markdownToHtml(pageSource.slurpString/*, linkRender*/)),
-                  maybeSidebar.map(s => sbtLink.markdownToHtml(s.slurpString/*, linkRender*/))
+                  Some(sbtLink.markdownToHtml(pageSource.string/*, linkRender*/)),
+                  maybeSidebar.map(s => sbtLink.markdownToHtml(s.string/*, linkRender*/))
                 )
               )
             }
@@ -295,7 +289,13 @@ class ReloadableApplication(sbtLink: SBTLink) extends ApplicationProvider {
 
       }
 
-      case _ => None
+      // Delegate to plugins
+      case _ => Play.maybeApplication.flatMap { app =>
+        app.plugins.foldLeft(Option.empty[play.api.mvc.Result]) { 
+          case (None, plugin: HandleWebCommandSupport) => plugin.handleWebCommand(request, sbtLink, path)
+          case (result, _) => result
+        }
+      }
 
     }
   }

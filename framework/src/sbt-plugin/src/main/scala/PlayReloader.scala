@@ -6,7 +6,7 @@ import Keys._
 import PlayExceptions._
 
 trait PlayReloader {
-  this: PlayCommands =>
+  this: PlayCommands with PlayPositionMapper =>
 
   // ----- Reloader
 
@@ -88,21 +88,6 @@ trait PlayReloader {
 
       // --- Utils
 
-      /*def markdownToHtml(markdown: String, link: String => (String, String)) = {
-        import org.pegdown._
-        import org.pegdown.ast._
-
-        val processor = new PegDownProcessor(Extensions.ALL)
-        val links = new LinkRenderer {
-          override def render(node: WikiLinkNode) = {
-            val (href, text) = link(node.getText)
-            new LinkRenderer.Rendering(href, text)
-          }
-        }
-
-        processor.markdownToHtml(markdown, links)
-      }*/
-
       def markdownToHtml(markdown: String) = markdown
 
       // ---
@@ -137,84 +122,54 @@ trait PlayReloader {
         updated
       }
 
-      def findSource(className: String) = {
+      def findSource(className: String, line: java.lang.Integer): Array[java.lang.Object] = {
         val topType = className.split('$').head
         currentAnalysis.flatMap { analysis =>
           analysis.apis.internal.flatMap {
             case (sourceFile, source) => {
               source.api.definitions.find(defined => defined.name == topType).map(_ => {
                 sourceFile: java.io.File
-              })
+              } -> line)
             }
-          }.headOption
+          }.headOption.map { 
+            case (source, maybeLine) => {
+              play.templates.MaybeGeneratedSource.unapply(source).map { generatedSource =>
+                generatedSource.source.get -> Option(maybeLine).map(l => generatedSource.mapLine(l):java.lang.Integer).orNull
+              }.getOrElse(source -> maybeLine)
+            }
+          }     
+        }.map {
+          case (file, line) => {
+            Array[java.lang.Object](file, line)
+          }
         }.orNull
       }
 
       def remapProblemForGeneratedSources(problem: xsbti.Problem) = {
-
-        problem.position.sourceFile.collect {
-
-          // Templates
-          case play.templates.MaybeGeneratedSource(generatedSource) => {
-            new xsbti.Problem {
-              def message = problem.message
-              def category = ""
-              def position = new xsbti.Position {
-                def line = {
-                  problem.position.line.map(l => generatedSource.mapLine(l.asInstanceOf[Int])).map(l => xsbti.Maybe.just(l.asInstanceOf[java.lang.Integer])).getOrElse(xsbti.Maybe.nothing[java.lang.Integer])
-                }
-                def lineContent = ""
-                def offset = xsbti.Maybe.nothing[java.lang.Integer]
-                def pointer = {
-                  problem.position.offset.map { offset =>
-                    generatedSource.mapPosition(offset.asInstanceOf[Int]) - IO.read(generatedSource.source.get).split('\n').take(problem.position.line.map(l => generatedSource.mapLine(l.asInstanceOf[Int])).get - 1).mkString("\n").size - 1
-                  }.map { p =>
-                    xsbti.Maybe.just(p.asInstanceOf[java.lang.Integer])
-                  }.getOrElse(xsbti.Maybe.nothing[java.lang.Integer])
-                }
-                def pointerSpace = xsbti.Maybe.nothing[String]
-                def sourceFile = xsbti.Maybe.just(generatedSource.source.get)
-                def sourcePath = xsbti.Maybe.just(sourceFile.get.getCanonicalPath)
-              }
-              def severity = problem.severity
-            }
+        val mappedPosition = playPositionMapper(problem.position)
+        mappedPosition.map { pos => new xsbti.Problem {
+            def message = problem.message
+            def category = ""
+            def position = pos
+            def severity = problem.severity
           }
-
-          // Routes files
-          case play.router.RoutesCompiler.MaybeGeneratedSource(generatedSource) => {
-            new xsbti.Problem {
-              def message = problem.message
-              def category = ""
-              def position = new xsbti.Position {
-                def line = {
-                  problem.position.line.flatMap(l => generatedSource.mapLine(l.asInstanceOf[Int])).map(l => xsbti.Maybe.just(l.asInstanceOf[java.lang.Integer])).getOrElse(xsbti.Maybe.nothing[java.lang.Integer])
-                }
-                def lineContent = ""
-                def offset = xsbti.Maybe.nothing[java.lang.Integer]
-                def pointer = xsbti.Maybe.nothing[java.lang.Integer]
-                def pointerSpace = xsbti.Maybe.nothing[String]
-                def sourceFile = xsbti.Maybe.just(new File(generatedSource.source.get.path))
-                def sourcePath = xsbti.Maybe.just(sourceFile.get.getCanonicalPath)
-              }
-              def severity = problem.severity
-            }
-          }
-
-        }.getOrElse {
-          problem
-        }
-
+        } getOrElse problem
       }
 
-      private def allProblems(inc: Incomplete): Seq[xsbti.Problem] =
+      private def allProblems(inc: Incomplete): Seq[xsbti.Problem] = {
         allProblems(inc :: Nil)
-      private def allProblems(incs: Seq[Incomplete]): Seq[xsbti.Problem] =
+      }
+        
+      private def allProblems(incs: Seq[Incomplete]): Seq[xsbti.Problem] = {
         problems(Incomplete.allExceptions(incs).toSeq)
-      private def problems(es: Seq[Throwable]): Seq[xsbti.Problem] =
+      }
+        
+      private def problems(es: Seq[Throwable]): Seq[xsbti.Problem] = {
         es flatMap {
           case cf: xsbti.CompileFailed => cf.problems
           case _ => Nil
         }
+      }
 
       def getProblems(incomplete: Incomplete): Seq[xsbti.Problem] = {
         (allProblems(incomplete) ++ {
@@ -302,7 +257,7 @@ trait PlayReloader {
                       UnexpectedException(Some("Compilation failed without reporting any problem!?"), Some(e))
                     }
                   }
-                  case e => UnexpectedException(unexpected = Some(e))
+                  case e: Exception => UnexpectedException(unexpected = Some(e))
                 }.getOrElse {
                   UnexpectedException(Some("Compilation task failed without any exception!?"))
                 }

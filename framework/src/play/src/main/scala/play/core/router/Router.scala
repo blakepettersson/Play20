@@ -4,17 +4,71 @@ import play.api.mvc._
 import play.api.mvc.Results._
 import org.apache.commons.lang3.reflect.MethodUtils
 
+import scala.util.parsing.input._
+import scala.util.parsing.combinator._
+import scala.util.matching._
+
+trait PathPart
+
+case class DynamicPart(name: String, constraint: String) extends PathPart {
+  override def toString = """DynamicPart("""" + name + "\", \"\"\"" + constraint + "\"\"\")" // "
+}
+
+case class StaticPart(value: String) extends PathPart {
+  override def toString = """StaticPart("""" + value + """")"""
+}
+
+case class PathPattern(parts: Seq[PathPart]) {
+
+  import java.util.regex._
+
+  lazy val (regex, groups) = {
+    Some(parts.foldLeft("", Map.empty[String, Int], 0) { (s, e) =>
+      e match {
+        case StaticPart(p) => ((s._1 + Pattern.quote(p)), s._2, s._3)
+        case DynamicPart(k, r) => {
+          ((s._1 + "(" + r + ")"), (s._2 + (k -> (s._3 + 1))), s._3 + 1 + Pattern.compile(r).matcher("").groupCount)
+        }
+      }
+    }).map {
+      case (r, g, _) => Pattern.compile("^" + r + "$") -> g
+    }.get
+  }
+
+  def apply(path: String): Option[Map[String, String]] = {
+    val matcher = regex.matcher(path)
+    if (matcher.matches) {
+      Some(groups.map {
+        case (name, g) => name -> matcher.group(g)
+      }.toMap)
+    } else {
+      None
+    }
+  }
+
+  def has(key: String): Boolean = parts.exists {
+    case DynamicPart(name, _) if name == key => true
+    case _ => false
+  }
+
+  override def toString = parts.map {
+    case DynamicPart(name, constraint) => "$" + name + "<" + constraint + ">"
+    case StaticPart(path) => path
+  }.mkString
+
+}
+
 /**
  * provides Play's router implementation
  */
 object Router {
-
+  
    object Route {
 
     trait ParamsExtractor {
       def unapply(request: RequestHeader): Option[RouteParams]
     }
-    def apply(method: String, pathPattern: play.router.PathPattern) = new ParamsExtractor {
+    def apply(method: String, pathPattern: PathPattern) = new ParamsExtractor {
 
       def unapply(request: RequestHeader): Option[RouteParams] = {
         if (method == request.method) {
@@ -65,22 +119,30 @@ object Router {
   case class HandlerDef(ref: AnyRef, controller: String, method: String, parameterTypes: Seq[Class[_]], verb: String, comments: String, path: String) {
 
     def getControllerClass: Class[_] = {
-      Option(controller.split('.').takeRight(1).head).filter(p => p.charAt(0).toUpper != p.charAt(0)).map { field =>
-        val parent = ref.getClass.getClassLoader.loadClass(controller.split('.').dropRight(1).mkString("."))
-        try {
-          parent.getMethod(field).getReturnType
-        } catch {
-          case _ => parent.getField(field).getType
-        }
-      }.getOrElse {
+      try {
         ref.getClass.getClassLoader.loadClass(controller)
+      } catch {
+        case e: Exception => {
+          // It might be a field or method, try to see if the parent exists as a class
+          val parent = try {
+            ref.getClass.getClassLoader.loadClass(controller.split('.').dropRight(1).mkString("."))
+          } catch {
+            // Throw the original exception
+            case _: Exception => throw e
+          }
+          val field = controller.split('.').takeRight(1).head
+          try {
+            parent.getMethod(field).getReturnType
+          } catch {
+            case _: Exception => parent.getField(field).getType
+          }
+        }
       }
     }
-
   }
 
   def queryString(items: List[Option[String]]) = {
-    Option(items.filter(_.isDefined).map(_.get)).filterNot(_.isEmpty).map("?" + _.mkString("&")).map(_.reverse.dropWhile(_ == '&').dropWhile(_ == '?').reverse).getOrElse("")
+    Option(items.filter(_.isDefined).map(_.get).filterNot(_.isEmpty)).filterNot(_.isEmpty).map("?" + _.mkString("&")).getOrElse("")
   }
 
   // HandlerInvoker
@@ -100,9 +162,8 @@ object Router {
       def call(call: => play.mvc.Result, handler: HandlerDef) = {
         new play.core.j.JavaAction {
           def invocation = call
-          def controller = handler.getControllerClass
-          def method = MethodUtils.getMatchingAccessibleMethod(controller, handler.method, handler.parameterTypes: _*)
-          def req[A] = (rh: RequestHeader, a:A) => Request(rh,a)
+          lazy val controller = handler.getControllerClass
+          lazy val method = MethodUtils.getMatchingAccessibleMethod(controller, handler.method, handler.parameterTypes: _*)
         }
       }
     }
@@ -287,8 +348,6 @@ object Router {
           override def apply(req: Request[play.mvc.Http.RequestBody]): Result = {
             javaAction(Request(tagRequest(req, handler), req.body))
           }
-
-          def req[A] = (rh: RequestHeader, a:A) => Request(rh,a)
         }
         case action: EssentialAction => new EssentialAction {
           def apply(rh: RequestHeader) = action(tagRequest(rh, handler))

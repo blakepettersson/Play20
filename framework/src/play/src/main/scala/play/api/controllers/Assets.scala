@@ -47,6 +47,13 @@ object Assets extends Controller {
 
   private val parsableTimezoneCode = " " + timeZoneCode
 
+  private lazy val defaultCharSet = Play.configuration.getString("default.charset").getOrElse("utf-8")
+
+  private def addCharsetIfNeeded(mimeType: String): String = 
+    if (MimeTypes.isText(mimeType))
+      "; charset="+defaultCharSet
+    else ""  
+  
   /**
    * Generates an `Action` that serves a static resource.
    *
@@ -70,8 +77,10 @@ object Assets extends Controller {
       NotFound
     } else {
 
+      val gzippedResource = Play.resource(resourceName + ".gz")
+
       val resource = {
-        Play.resource(resourceName + ".gz").map(_ -> true)
+        gzippedResource.map(_ -> true)
           .filter(_ => request.headers.get(ACCEPT_ENCODING).map(_.split(',').exists(_ == "gzip" && Play.isProd)).getOrElse(false))
           .orElse(Play.resource(resourceName).map(_ -> false))
       }
@@ -107,17 +116,18 @@ object Assets extends Controller {
                 val response = SimpleResult(
                   header = ResponseHeader(OK, Map(
                     CONTENT_LENGTH -> length.toString,
-                    CONTENT_TYPE -> MimeTypes.forFileName(file).getOrElse(BINARY),
+                    CONTENT_TYPE -> MimeTypes.forFileName(file).map(m => m + addCharsetIfNeeded(m)).getOrElse(BINARY),
                     DATE -> df.print({ new java.util.Date }.getTime)
                   )),
                   resourceData
                 )
 
-                // Is Gzipped?
-                val gzippedResponse = if (isGzipped) {
-                  response.withHeaders(CONTENT_ENCODING -> "gzip")
-                } else {
-                  response
+                // If there is a gzipped version, even if the client isn't accepting gzip, we need to specify the
+                // Vary header so proxy servers will cache both the gzip and the non gzipped version
+                val gzippedResponse = (gzippedResource.isDefined, isGzipped) match {
+                  case (true, true) => response.withHeaders(VARY -> ACCEPT_ENCODING, CONTENT_ENCODING -> "gzip")
+                  case (true, false) => response.withHeaders(VARY -> ACCEPT_ENCODING)
+                  case _ => response
                 }
 
                 // Add Etag if we are able to compute it

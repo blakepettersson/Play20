@@ -20,7 +20,7 @@ object Console {
            ||  __/|_|\____|\__ (_)
            ||_|            |__/
            |
-           |""".stripMargin) + ("play! " + play.core.PlayVersion.current + ", http://www.playframework.org")
+           |""".stripMargin) + ("play! " + play.core.PlayVersion.current + " (using Java " + System.getProperty("java.version") + " and Scala " + play.core.PlayVersion.scalaVersion + "), http://www.playframework.org")
 
   // -- Commands
 
@@ -108,7 +108,6 @@ object Console {
           """|
                |  1             - Create a simple Scala application
                |  2             - Create a simple Java application
-               |  3             - Create an empty project
                |  <g8 template> - Create an app based on the g8 template hosted on Github
                |""".stripMargin)
 
@@ -122,7 +121,6 @@ object Console {
         val templateToUse = Option(consoleReader.readLine()).map(_.trim).getOrElse("") match {
           case "1" => "scala-skel"
           case "2" => "java-skel"
-          case "3" => "empty-skel"
           case g8 @ _ => addG8(g8)
         }
         (templateToUse, name)

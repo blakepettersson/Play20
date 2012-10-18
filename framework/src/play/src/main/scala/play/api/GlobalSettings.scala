@@ -1,6 +1,7 @@
 package play.api
 
 import play.api.mvc._
+import java.io.File
 
 /**
  * Defines an application’s global settings.
@@ -47,9 +48,22 @@ trait GlobalSettings {
   }
 
   /**
-   * Additional configuration provided by the application.
+   * Additional configuration provided by the application.  This is invoked by the default implementation of
+   * onConfigLoad, so if you override that, this won't be invoked.
    */
   def configuration: Configuration = Configuration.empty
+
+  /**
+   * Called just after configuration has been loaded, to give the application an opportunity to modify it.
+   *
+   * @param config the loaded configuration
+   * @param path the application path
+   * @param classloader The applications classloader
+   * @param mode The mode the application is running in
+   * @return The configuration that the application should use
+   */
+  def onLoadConfig(config: Configuration, path: File, classloader: ClassLoader, mode: Mode.Mode): Configuration =
+    config ++ configuration
 
   /**
    * Called Just before the action is used.
@@ -80,15 +94,22 @@ trait GlobalSettings {
    * @return The result to send to the client
    */
   def onError(request: RequestHeader, ex: Throwable): Result = {
-    InternalServerError(Play.maybeApplication.map {
-      case app if app.mode != Mode.Prod => views.html.defaultpages.devError.f
-      case app => views.html.defaultpages.error.f
-    }.getOrElse(views.html.defaultpages.devError.f) {
-      ex match {
-        case e: PlayException.UsefulException => e
-        case e => UnexpectedException(unexpected = Some(e))
+    try {
+      InternalServerError(Play.maybeApplication.map {
+        case app if app.mode != Mode.Prod => views.html.defaultpages.devError.f
+        case app => views.html.defaultpages.error.f
+      }.getOrElse(views.html.defaultpages.devError.f) {
+        ex match {
+          case e: UsefulException => e
+          case e: Exception => UnexpectedException(unexpected = Some(e))
+        }
+      })
+    } catch {
+      case e: Throwable => {
+        Logger.error("Error while rendering default error page", e)
+        InternalServerError
       }
-    })
+    } 
   }
 
   /**
