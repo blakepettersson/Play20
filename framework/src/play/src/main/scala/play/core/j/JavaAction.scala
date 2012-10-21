@@ -7,7 +7,7 @@ import play.mvc.Http.{ Context => JContext, Request => JRequest, RequestBody => 
 /*
  * An action that's handling Java requests
  */
-trait JavaAction extends Action[play.mvc.Http.RequestBody, Request] with JavaHelpers {
+trait JavaAction extends Action[play.mvc.Http.RequestBody] with JavaHelpers {
 
   def parser: BodyParser[play.mvc.Http.RequestBody] = {
     Seq(method.getAnnotation(classOf[play.mvc.BodyParser.Of]), controller.getAnnotation(classOf[play.mvc.BodyParser.Of]))
@@ -67,7 +67,7 @@ trait JavaAction extends Action[play.mvc.Http.RequestBody, Request] with JavaHel
       JContext.current.set(javaContext)
       play.mvc.Results.async {
         play.libs.F.Promise.pure("").map(
-          new play.libs.F.Function[String,JResult] {
+          new play.libs.F.Function[String, JResult] {
             def apply(nothing: String) = finalAction.call(javaContext)
           }
         )

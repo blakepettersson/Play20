@@ -65,9 +65,8 @@ object EssentialAction {
  * }}}
  *
  * @tparam A the type of the request body
- * @tparam R the request type, a subtype of `Request`.
  */
-trait Action[A, R[_] <: Request[_]] extends EssentialAction {
+trait Action[A] extends EssentialAction {
 
   /**
    * Type of the request body.
@@ -82,20 +81,12 @@ trait Action[A, R[_] <: Request[_]] extends EssentialAction {
   def parser: BodyParser[A]
 
   /**
-   * Constructs a `Request`.
-   *
-   * @tparam A the type of the request body
-   * @return a function returning an instance of a `Request`
-   */
-  def req[A]: (RequestHeader,A) => R[A]
-
-  /**
    * Invokes this action.
    *
    * @param request the incoming HTTP request
    * @return the result to be sent to the client
    */
-  def apply(request: R[A]): Result
+  def apply(request: Request[A]): Result
 
   //TODO make sure you use the right execution context
   def apply(rh: RequestHeader): Iteratee[Array[Byte], Result] = parser(rh).map {
@@ -103,12 +94,14 @@ trait Action[A, R[_] <: Request[_]] extends EssentialAction {
       Logger("play").trace("Got direct result from the BodyParser: " + r)
       r
     case Right(a) =>
-      val request = req(rh,a)
+      val request = Request(rh, a)
       Logger("play").trace("Invoking action with request: " + request)
       Play.maybeApplication.map { app =>
+        // try {
         play.utils.Threads.withContextClassLoader(app.classloader) {
           apply(request)
         }
+        // } catch { case e => app.handleError(rh, e) }
       }.getOrElse(Results.InternalServerError)
   }
 
@@ -117,7 +110,7 @@ trait Action[A, R[_] <: Request[_]] extends EssentialAction {
    *
    * @return itself
    */
-  override def apply(): Action[A, R] = this
+  override def apply(): Action[A] = this
 
   override def toString = {
     "Action(parser=" + parser + ")"
@@ -128,7 +121,7 @@ trait Action[A, R[_] <: Request[_]] extends EssentialAction {
 /**
  * A body parser parses the HTTP request body content.
  *
- * @tparam A the body content type
+ * @tparam T the body content type
  */
 trait BodyParser[+A] extends Function1[RequestHeader, Iteratee[Array[Byte], Either[Result, A]]] {
   self =>
@@ -192,10 +185,8 @@ object BodyParser {
 
 /**
  * Provides helpers for creating `Action` values.
- *
- * @tparam R the request type, a subtype of ``Request``.
  */
-trait ActionBuilder[R[_] <: Request[_]]  {
+trait ActionBuilder {
 
   /**
    * Constructs an `Action`.
@@ -212,19 +203,10 @@ trait ActionBuilder[R[_] <: Request[_]]  {
    * @param block the action code
    * @return an action
    */
-  def apply[A](bodyParser: BodyParser[A])(block: R[A] => Result): Action[A, R] = new Action[A, R] {
+  def apply[A](bodyParser: BodyParser[A])(block: Request[A] => Result): Action[A] = new Action[A] {
     def parser = bodyParser
-    def apply(ctx: R[A]) = block(ctx)
-    def req[A] = request
+    def apply(ctx: Request[A]) = block(ctx)
   }
-
-  /**
-   * Constructs a `Request`.
-   *
-   * @tparam A the type of the request body
-   * @return a function returning an instance of a `Request`
-   */
-  def request[A]: (RequestHeader,A) => R[A]
 
   /**
    * Constructs an `Action` with default content.
@@ -239,7 +221,7 @@ trait ActionBuilder[R[_] <: Request[_]]  {
    * @param block the action code
    * @return an action
    */
-  def apply(block: R[AnyContent] => Result): Action[AnyContent, R] = apply(BodyParsers.parse.anyContent)(block)
+  def apply(block: Request[AnyContent] => Result): Action[AnyContent] = apply(BodyParsers.parse.anyContent)(block)
 
   /**
    * Constructs an `Action` with default content, and no request parameter.
@@ -254,12 +236,11 @@ trait ActionBuilder[R[_] <: Request[_]]  {
    * @param block the action code
    * @return an action
    */
-  def apply(block: => Result): Action[AnyContent, R] = apply(_ => block)
+  def apply(block: => Result): Action[AnyContent] = apply(_ => block)
+
 }
 
 /**
  * Helper object to create `Action` values.
  */
-object Action extends ActionBuilder[Request] {
-  def request[A] = (rh: RequestHeader, a:A) => Request(rh,a)
-}
+object Action extends ActionBuilder

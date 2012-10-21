@@ -220,13 +220,6 @@ class ApplicationSpec extends Specification {
       }
     }
 
-    "do custom generic actions" in {
-      running(FakeApplication()) {
-        val Some(result) = route(FakeRequest(GET, "/customAction"))
-        contentAsString(result) must contain ("XXX")
-      }
-    }
-
     "test Accept header mime-types" in {
       import play.api.http.HeaderNames._
       "Scala API" in {

@@ -63,7 +63,7 @@ case class PathPattern(parts: Seq[PathPart]) {
  */
 object Router {
 
-   object Route {
+  object Route {
 
     trait ParamsExtractor {
       def unapply(request: RequestHeader): Option[RouteParams]
@@ -164,7 +164,6 @@ object Router {
           def invocation = call
           lazy val controller = handler.getControllerClass
           lazy val method = MethodUtils.getMatchingAccessibleMethod(controller, handler.method, handler.parameterTypes: _*)
-          def req[A] = (rh: RequestHeader, a:A) => Request(rh,a)
         }
       }
     }
@@ -349,8 +348,6 @@ object Router {
           override def apply(req: Request[play.mvc.Http.RequestBody]): Result = {
             javaAction(Request(tagRequest(req, handler), req.body))
           }
-
-          def req[A] = (rh: RequestHeader, a:A) => Request(rh,a)
         }
         case action: EssentialAction => new EssentialAction {
           def apply(rh: RequestHeader) = action(tagRequest(rh, handler))

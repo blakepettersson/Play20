@@ -138,8 +138,4 @@ object Application extends Controller {
       Promise.pure[Result](sys.error("Error"))
     }
   }
-
-  def customAction = CustomAction { req =>
-    Ok(req.token)
-  }
 }
