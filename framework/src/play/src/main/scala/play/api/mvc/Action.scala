@@ -67,7 +67,7 @@ object EssentialAction {
  * @tparam A the type of the request body
  * @tparam R the request type, a subtype of `Request`.
  */
-trait Action[A, R[_] <: Request[_]] extends EssentialAction {
+trait GenericAction[A, R[_] <: Request[_]] extends EssentialAction {
 
   /**
    * Type of the request body.
@@ -87,7 +87,7 @@ trait Action[A, R[_] <: Request[_]] extends EssentialAction {
    * @tparam A the type of the request body
    * @return a function returning an instance of a `Request`
    */
-  def req[A]: (RequestHeader,A) => R[A]
+  def request[A]: (RequestHeader, A) => R[A]
 
   /**
    * Invokes this action.
@@ -103,11 +103,11 @@ trait Action[A, R[_] <: Request[_]] extends EssentialAction {
       Logger("play").trace("Got direct result from the BodyParser: " + r)
       r
     case Right(a) =>
-      val request = req(rh,a)
-      Logger("play").trace("Invoking action with request: " + request)
+      val req = request(rh, a)
+      Logger("play").trace("Invoking action with request: " + req)
       Play.maybeApplication.map { app =>
         play.utils.Threads.withContextClassLoader(app.classloader) {
-          apply(request)
+          apply(req)
         }
       }.getOrElse(Results.InternalServerError)
   }
@@ -117,12 +117,21 @@ trait Action[A, R[_] <: Request[_]] extends EssentialAction {
    *
    * @return itself
    */
-  override def apply(): Action[A, R] = this
+  override def apply(): GenericAction[A, R] = this
 
   override def toString = {
     "Action(parser=" + parser + ")"
   }
 
+}
+
+/**
+ * This extends `GenericAction` with a default `Request`.
+ *
+ * @tparam A the type of the request body
+ */
+trait Action[A] extends GenericAction[A, Request] {
+  def request[A] = (rh: RequestHeader, a: A) => Request(rh, a)
 }
 
 /**
@@ -193,9 +202,10 @@ object BodyParser {
 /**
  * Provides helpers for creating `Action` values.
  *
- * @tparam R the request type, a subtype of ``Request``.
+ * @tparam R the request type, a subtype of `Request`.
+ * @tparam E the action type, a subtype of `GenericAction`.
  */
-trait ActionBuilder[R[_] <: Request[_]]  {
+trait ActionBuilderBase[R[_] <: Request[_], E[_] <: GenericAction[_, R]] {
 
   /**
    * Constructs an `Action`.
@@ -212,19 +222,7 @@ trait ActionBuilder[R[_] <: Request[_]]  {
    * @param block the action code
    * @return an action
    */
-  def apply[A](bodyParser: BodyParser[A])(block: R[A] => Result): Action[A, R] = new Action[A, R] {
-    def parser = bodyParser
-    def apply(ctx: R[A]) = block(ctx)
-    def req[A] = request
-  }
-
-  /**
-   * Constructs a `Request`.
-   *
-   * @tparam A the type of the request body
-   * @return a function returning an instance of a `Request`
-   */
-  def request[A]: (RequestHeader,A) => R[A]
+  def apply[A](bodyParser: BodyParser[A])(block: R[A] => Result): E[A]
 
   /**
    * Constructs an `Action` with default content.
@@ -239,7 +237,7 @@ trait ActionBuilder[R[_] <: Request[_]]  {
    * @param block the action code
    * @return an action
    */
-  def apply(block: R[AnyContent] => Result): Action[AnyContent, R] = apply(BodyParsers.parse.anyContent)(block)
+  def apply(block: R[AnyContent] => Result): E[AnyContent] = apply(BodyParsers.parse.anyContent)(block)
 
   /**
    * Constructs an `Action` with default content, and no request parameter.
@@ -254,12 +252,72 @@ trait ActionBuilder[R[_] <: Request[_]]  {
    * @param block the action code
    * @return an action
    */
-  def apply(block: => Result): Action[AnyContent, R] = apply(_ => block)
+  def apply(block: => Result): E[AnyContent] = apply(_ => block)
+}
+
+/**
+ * Provides helpers for creating `GenericAction` values with a custom `Request` type.
+ *
+ * @tparam R the request type, a subtype of `Request`.
+ */
+trait GenericActionBuilder[R[_] <: Request[_]] extends ActionBuilderBase[R, ({ type L[A] = GenericAction[A, R] })#L] {
+
+  /**
+   * Constructs a `Request`.
+   *
+   * @tparam A the type of the request body
+   * @return a function returning an instance of a `Request`
+   */
+  def request[A]: (RequestHeader, A) => R[A]
+
+  /**
+   * Constructs an `Action`.
+   *
+   * For example:
+   * {{{
+   * val echo = Action(parse.anyContent) { request =>
+   *   Ok("Got request [" + request + "]")
+   * }
+   * }}}
+   *
+   * @tparam A the type of the request body
+   * @param bodyParser the `BodyParser` to use to parse the request body
+   * @param block the action code
+   * @return an action
+   */
+  def apply[A](bodyParser: BodyParser[A])(block: R[A] => Result): GenericAction[A, R] = new GenericAction[A, R] {
+    def parser = bodyParser
+    def apply(request: R[A]) = block(request)
+    def request[A] = GenericActionBuilder.this.request
+  }
+}
+
+/**
+ * Provides helpers for creating default `Action` values with a default `Request` type.
+ */
+trait ActionBuilder extends ActionBuilderBase[Request, Action] {
+  /**
+   * Constructs an `Action`.
+   *
+   * For example:
+   * {{{
+   * val echo = Action(parse.anyContent) { request =>
+   *   Ok("Got request [" + request + "]")
+   * }
+   * }}}
+   *
+   * @tparam A the type of the request body
+   * @param bodyParser the `BodyParser` to use to parse the request body
+   * @param block the action code
+   * @return an action
+   */
+  def apply[A](bodyParser: BodyParser[A])(block: Request[A] => Result): Action[A] = new Action[A] {
+    def parser = bodyParser
+    def apply(ctx: Request[A]) = block(ctx)
+  }
 }
 
 /**
  * Helper object to create `Action` values.
  */
-object Action extends ActionBuilder[Request] {
-  def request[A] = (rh: RequestHeader, a:A) => Request(rh,a)
-}
+object Action extends ActionBuilder

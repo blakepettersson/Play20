@@ -49,18 +49,18 @@ object Assets extends Controller {
 
   private lazy val defaultCharSet = Play.configuration.getString("default.charset").getOrElse("utf-8")
 
-  private def addCharsetIfNeeded(mimeType: String): String = 
+  private def addCharsetIfNeeded(mimeType: String): String =
     if (MimeTypes.isText(mimeType))
-      "; charset="+defaultCharSet
-    else ""  
-  
+      "; charset=" + defaultCharSet
+    else ""
+
   /**
    * Generates an `Action` that serves a static resource.
    *
    * @param path the root folder for searching the static resource files, such as `"/public"`
    * @param file the file part extracted from the URL
    */
-  def at(path: String, file: String): Action[AnyContent, Request] = Action { request =>
+  def at(path: String, file: String): Action[AnyContent] = Action { request =>
     // -- LastModified handling
 
     def parseDate(date: String): Option[java.util.Date] = try {
